@@ -1,0 +1,73 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+build_temp_src/
+dist/
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# PyInstaller
+*.spec
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+automacaoScann.zip
+*.zip
+output/
+input/*.xlsx
+input/*.csv
+*.log
+
+# Test data & sensitive files (PDFs, Excel with company data, audit exports)
+automacaoScann/biblioteca/
+automacaoScann/input/
+automacaoScann/validation/
+automacaoScann/__tests/
+automacaoScann/validaai_old/
+*.pdf
+*.xlsx
+*.xls
+*.backup
+
+# Local config
+config/local/
+*.local.yaml
+*.local.yml
+
+# Temporary files
+*.tmp
+*.temp
+temp/
+tmp/
+
+# Large data files
+*.db
+*.sqlite
+*.sqlite3

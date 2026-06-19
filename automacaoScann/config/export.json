@@ -1,0 +1,79 @@
+{
+  "exporters": ["excel", "csv", "json_audit", "html_report"],
+  "excel": {
+    "sheet_name": "Resumo",
+    "freeze_header": true,
+    "auto_filter": true,
+    "auto_fit_columns": true,
+    "status_colors": {
+      "OK": "3BA55C",
+      "REVISAO": "FAA61A",
+      "ERRO": "ED4245",
+      "ERRO_PAGAMENTO": "ED4245",
+      "NOT_RUN": "CCCCCC"
+    }
+  },
+  "csv": {
+    "delimiter": ",",
+    "encoding": "utf-8-sig",
+    "quoting": "all"
+  },
+  "json_audit": {
+    "indent": 2,
+    "include_metadata": true,
+    "include_summary": true
+  },
+  "html_report": {
+    "theme": "dark",
+    "include_charts": true,
+    "chart_type": "doughnut",
+    "cdn_base": "https://cdn.jsdelivr.net/npm/",
+    "chart_js_version": "4.4.1"
+  },
+  "output": {
+    "directory": "output",
+    "filename_template": "validacao_{timestamp}_{etapa}_v{version}",
+    "timestamp_format": "%Y%m%d_%H%M%S",
+    "also_save_roteiro_compat": true,
+    "roteiro_compat_filename": "validacao_resultado.xlsx"
+  },
+  "notifications": {
+    "enabled": false,
+    "email": {
+      "enabled": false,
+      "smtp_host": "smtp.gmail.com",
+      "smtp_port": 587,
+      "username": "",
+      "password": "",
+      "from_email": "",
+      "to_emails": [],
+      "subject_template": "ValidaAI - Relatório {etapa} ({timestamp}) - {ok} OK, {revisao} REVISAO, {erro} ERRO"
+    },
+    "slack": {
+      "enabled": false,
+      "webhook_url": "",
+      "channel": "#validaai",
+      "username": "ValidaAI Bot",
+      "icon_emoji": ":robot_face:",
+      "message_template": "*ValidaAI Relatório*\\nEtapa: {etapa}\\nTotal: {total} | OK: {ok} | REVISAO: {revisao} | ERRO: {erro}\\nArquivos anexados ao relatório."
+    }
+  },
+  "scheduler": {
+    "enabled": false,
+    "cron": "0 6 * * 1-5",
+    "roteiro_path": "biblioteca/TEMPLATE_COM_BIN_NOVO.xlsx",
+    "etapa": "ETAPA 1",
+    "audit_file": "biblioteca/export_tickets_audit_companyId=74651_auditDate=2026-06-11_49898c_16-06-2026_17-23.xlsx",
+    "output_dir": "output/scheduled",
+    "notification_on_complete": true,
+    "notification_on_error": true,
+    "max_retries": 3,
+    "retry_delay_minutes": 15
+  },
+  "testing": {
+    "snapshot_dir": "tests/snapshots",
+    "golden_files_dir": "tests/golden",
+    "validate_on_ci": true,
+    "tolerance_pixels": 2
+  }
+}
