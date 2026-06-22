@@ -106,11 +106,24 @@ class TestScriptReader:
                 t_raw = rd.get('Teste', '')
                 if t_raw is None or str(t_raw).strip() == '':
                     continue
+                
+                # Handle both explicit numbers and Excel formulas (e.g., =A8+1)
+                t_str = str(t_raw).strip()
+                is_formula = t_str.startswith('=')
                 try:
-                    float(str(t_raw).strip())
+                    t_num = float(t_str) if not is_formula else None
                 except ValueError:
-                    continue
-                t_key = str(t_raw).strip()
+                    t_num = None
+                
+                # Use explicit number if available, otherwise assign sequential
+                if t_num is not None:
+                    t_key = str(int(t_num) if t_num == int(t_num) else t_num)
+                else:
+                    # For formula rows, assign next sequential number
+                    # Find the last assigned number
+                    last_num = max([int(k) for k in seen_tests if k.isdigit()], default=0)
+                    t_key = str(last_num + 1)
+                
                 if t_key in seen_tests:
                     continue
                 seen_tests.add(t_key)
@@ -199,12 +212,23 @@ class TestScriptReader:
                 t_raw = rd.get('Teste', '')
                 if t_raw is None or str(t_raw).strip() == '':
                     continue
-                # Validate it's a numeric test ID
+                
+                # Handle both explicit numbers and Excel formulas (e.g., =A8+1)
+                t_str = str(t_raw).strip()
+                is_formula = t_str.startswith('=')
                 try:
-                    float(str(t_raw).strip())
+                    t_num = float(t_str) if not is_formula else None
                 except ValueError:
-                    continue
-                t_key = str(t_raw).strip()
+                    t_num = None
+                
+                # Use explicit number if available, otherwise assign sequential
+                if t_num is not None:
+                    t_key = str(int(t_num) if t_num == int(t_num) else t_num)
+                else:
+                    # For formula rows, assign next sequential number
+                    last_num = max([int(k) for k in seen_tests if k.isdigit()], default=0)
+                    t_key = str(last_num + 1)
+                
                 if t_key in seen_tests:
                     continue
                 seen_tests.add(t_key)

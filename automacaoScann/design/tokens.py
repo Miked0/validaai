@@ -230,10 +230,11 @@ except TokenError:
     LINE_HEIGHT_NORMAL = 1.5
     LINE_HEIGHT_RELAXED = 1.75
     RADIUS_NONE = 0
-    RADIUS_SM = 4
-    RADIUS_MD = 6
-    RADIUS_LG = 8
-    RADIUS_XL = 12
+    RADIUS_SM = 8
+    RADIUS_MD = 12
+    RADIUS_LG = 16
+    RADIUS_XL = 24
+    RADIUS_2XL = 32
     RADIUS_FULL = 9999
     SHADOW_NONE = "none"
     SHADOW_SM = "0 1px 2px rgba(0,0,0,0.3)"

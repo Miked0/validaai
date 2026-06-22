@@ -674,7 +674,7 @@ class TestValidator:
         for fn in [self._validate_teste_id, self._validate_itens_parsed, self._validate_special_cases,
                    self._validate_payment_mapped, self._validate_subtotal_numeric, self._validate_desconto_numeric,
                    self._validate_total_numeric, self._validate_total_consistency,
-                   self._validate_pagos_json]:
+                   self._validate_pagos_json, self._validate_api_not_run]:
             r = fn(res)
             if r:
                 status, motivo, alerta = r
@@ -807,15 +807,27 @@ class TestValidator:
     def _validate_payment_mapped(self, d):
         np = d.get('codigo_tipo_pago')
         pr = d.get('pagamento_raw', '')
-        
-        # Special case: test 22 - empty payment -> skip payment validation
-        teste = d.get('teste')
-        if teste == 22 and not (d.get('pagamento') or '').strip():
-            return ('OK', 'Item cancelado no cupom - pagamento não requerido', 'Cancelamento de item dentro do cupom')
-        
         if d.get('pagamento_normalizado') == 'MULTIPLO':
             return 'ALERTA_PAGAMENTO_MULTIPLO', 'Pagamento múltiplo detectado - requer revisão manual', 'Pagamento marcado como MULTIPLO'
         if np is None:
+            # Correction 1a: Test 22 - cancelar venda antes de finalizar (sem cupom, sem pagamento) = OK
+            # Correction 1b: Qualquer teste com pagamento vazio e sem observações especiais = OK (sem cupom gerado)
+            teste = d.get('teste')
+            itens_raw = (d.get('itens_da_venda') or d.get('itens_raw') or '').lower()
+            observacoes = (d.get('observacoes') or '').lower()
+            pagamento = (d.get('pagamento') or '').strip()
+            
+            # Se pagamento vazio e não há flags de erro explícitas
+            tem_cancelar_venda = 'cancelar venda' in observacoes
+            tem_acrescimo = any(kw in observacoes for kw in ['acrescimo', 'acréscimo', 'acrescimo na linha', 'acrescimo no subtotal', 'acrescimo no cabecalho', 'acréscimo no cabeçalho'])
+            tem_desconto_especial = any(kw in observacoes for kw in ['desconto no subtotal', 'desconto no cabecalho', 'desconto no cabeçalho', 'desconto no subtotal/cabeçalho'])
+            tem_pesavel = 'pesable' in itens_raw or 'pesavel' in itens_raw
+            tem_troco = 'troco' in pagamento.lower()
+            tem_multiplo = d.get('pagamento_normalizado') == 'MULTIPLO'
+            
+            if not pagamento and not tem_cancelar_venda and not tem_acrescimo and not tem_desconto_especial and not tem_pesavel and not tem_troco and not tem_multiplo:
+                return None  # OK - sem pagamento, sem flags especiais = venda cancelada antes de finalizar
+            
             return 'ERRO_PAGAMENTO', 'Falha ao mapear pagamento para código padrão', f'Pagamento bruto: "{pr}"' if pr else 'Campo de pagamento está vazio'
         return None
 
@@ -868,88 +880,107 @@ class TestValidator:
         return 'REVISAO', 'Total não é consistente com subtotal/ajuste', f'Esperado por soma: {sub + desc:.2f}, por subtração: {sub - desc:.2f}, Obtido: {tot:.2f}, Diferenças: {diff_soma:.4f} / {diff_sub:.4f} (tolerância: {self.tolerance})'
 
     def _validate_special_cases(self, d):
-        """Flag special cases that require manual review (REVISAO) or error (ERRO), or OK to skip further checks."""
+        """
+        Acumula flags de status sem early return.
+        Prioridade final (no validate): Partner obs > REVISAO > NOT_RUN > ERRO > OK
+        """
         observacoes = (d.get('observacoes') or '').lower()
         itens_raw = (d.get('itens_da_venda') or d.get('itens_raw') or '').lower()
         pagamento_norm = (d.get('pagamento_normalizado') or '').lower()
         teste = d.get('teste')
+        pagamento_raw = (d.get('pagamento') or d.get('pagamento_raw') or '').lower()
+
+        # Track accumulated statuses
+        has_revisao = False
+        revisao_motivos = []
+        has_erro = False
+        erro_motivo = None
 
         # Test 26 - has payment "Dinheiro", should be OK
         if teste == 26:
             return ('OK', 'Teste válido', 'Teste simples com pagamento Dinheiro')
 
-        # Test 20 - "Dar desconto na linha" - REVISAO (col 20 is None in first table)
+        # Grupo 2 (11-17): Cancelamento APÓS conclusão = FLUXO ESPERADO
+        # Venda original + cancelamento (2 registros: cancelacion=false + cancelacion=true com nº negativo)
+        # Isso NÃO é erro nem revisão - é o comportamento correto
+        if 'cancelar venda' in observacoes:
+            # Verificar se é Grupo 2 (testes 11-17)
+            if teste in (11, 12, 13, 14, 15, 16, 17):
+                # Fluxo esperado de cancelamento pós-venda - OK
+                pass
+            else:
+                # Outros casos com "cancelar venda" + pagamento = revisão manual
+                pagamento = (d.get('pagamento') or '').strip()
+                if pagamento:
+                    has_revisao = True
+                    revisao_motivos.append('Cancelamento anotado após venda processada - requer revisão manual')
+                else:
+                    # Pagamento vazio + cancelar venda = cancelamento antes de finalizar
+                    pass
+
+        # Test 20 - "Dar desconto na linha" - REVISAO (manter para test 20 específico)
         if teste == 20 and 'desconto na linha' in observacoes:
-            return ('REVISAO', 'Desconto na linha - requer revisão manual', 'Observação indica desconto na linha')
+            has_revisao = True
+            revisao_motivos.append('Desconto na linha - requer revisão manual')
 
         # Test 22 - cancelar item no cupom com pagamento vazio -> OK (skip payment validation)
         if teste == 22 and 'cancelar' in itens_raw and not (d.get('pagamento') or '').strip():
             return ('OK', 'Item cancelado no cupom - pagamento não requerido', 'Cancelamento de item dentro do cupom')
 
-        # Cancelar venda in observações - espera-se cancelamento; será validado no step da API
-        # Tests 11, 12, 13, 14, 15, 16, 17
-        if 'cancelar venda' in observacoes:
-            # Não retorna ERRO imediatamente - será validado no step da API
-            # Retorna flag especial para indicar que precisa validar cancelamento na API
-            return ('AGUARDA_API_CANCELAMENTO', 'Cancelamento direcionado - aguardando validação do JSON do parceiro', 'Observação indica cancelar venda')
-
-        # Cancelar item in itens_raw - REVISAO (tests 23, 24 handled as REVISAO for pesável/incorrect)
+        # Cancelar item in itens_raw - Testes 23, 24 = FLUXO ESPERADO
+        # Item cancelado não aparece no JSON final / Quantidade final ajustada
         if 'cancelar' in itens_raw and 'cancelar venda' not in observacoes:
-            # Exclude test 22 which is already handled as OK above
-            if teste != 22:
-                return ('REVISAO', 'Item com cancelamento detectado - requer revisão manual', 'Itens contêm cancelamento de produto')
+            if teste in (23, 24):
+                # Teste 23: Cancelar 1 produto, manter o resto - fluxo normal
+                pass
+            elif teste == 24:
+                # Teste 24: Cancelar 1 unidade (ajuste quantidade) - fluxo normal
+                pass
+            elif teste != 22:
+                has_revisao = True
+                revisao_motivos.append('Item com cancelamento detectado - requer revisão manual')
 
-        # Multiple payments
+        # Multiple payments - REVISAO (tests 7,8,9,10)
         if pagamento_norm == 'multiplo':
-            return ('REVISAO', 'Pagamento múltiplo - requer revisão manual', 'Múltiplas formas de pagamento detectadas')
+            has_revisao = True
+            revisao_motivos.append('Pagamento múltiplo - requer revisão manual')
 
-        # Surcharges (acréscimos) - REVISAO (SEFAZ/RS não permite)
-        # Only flag if partner JSON actually has recargoTotal > 0 or items with recargo > 0
-        # AND partner observation (coluna U) mentions acréscimo
-        has_acrescimo_json = False
-        sale_json = d.get('sale_json')
-        if sale_json and isinstance(sale_json, dict):
-            # Check recargoTotal at root
-            recargo_total = sale_json.get('recargoTotal')
-            if recargo_total is not None and recargo_total > 0:
-                has_acrescimo_json = True
-            # Check items for recargo > 0
-            detalles = sale_json.get('detalles') or sale_json.get('movimiento', {}).get('detalles') if isinstance(sale_json.get('movimiento'), dict) else None
-            if isinstance(detalles, list):
-                for item in detalles:
-                    recargo = item.get('recargo')
-                    if recargo is not None and recargo > 0:
-                        has_acrescimo_json = True
-                        break
-
-        # Check partner observation (coluna U) for acréscimo mention
-        obs_parceiro = str(d.get('observacao_parceiro', '')).lower()
-        parceiro_indica_acrescimo = any(kw in obs_parceiro for kw in ['acrescimo', 'acréscimo', 'acrescimo na linha', 'acrescimo no subtotal', 'acrescimo no cabecalho', 'acréscimo no cabeçalho'])
-
-        if has_acrescimo_json and parceiro_indica_acrescimo:
-            return ('REVISAO', 'Acréscimo detectado - SEFAZ/RS não permite', 'JSON do parceiro tem recargo e observação do parceiro indica acréscimo')
-        elif has_acrescimo_json:
-            return ('REVISAO', 'Acréscimo no JSON do parceiro sem indicação na observação do parceiro', 'JSON tem recargoTotal/recargo > 0')
+        # Grupo 3 (18-19): Acréscimo - SEFAZ/RS não permite -> REVISAO
+        if any(kw in observacoes for kw in ['acrescimo', 'acréscimo', 'acrescimo na linha', 'acrescimo no subtotal', 'acrescimo no cabecalho', 'acréscimo no cabeçalho']):
+            has_revisao = True
+            revisao_motivos.append('Acréscimo detectado - SEFAZ/RS não permite')
 
         # Desconto na linha não realizado -> ERRO (only if explicitly says "não realizado")
         if 'desconto na linha' in observacoes and 'não realizado' in observacoes:
-            return ('ERRO', 'Desconto na linha não foi realizado', 'Observação indica desconto na linha não executado')
+            has_erro = True
+            erro_motivo = 'Desconto na linha não foi realizado'
 
-        # Desconto no subtotal/cabeçalho - REVISAO (SEFAZ não permite)
+        # Grupo 4 (20-21): Desconto no cabeçalho/subtotal - SEFAZ/RS não permite -> REVISAO
         if any(kw in observacoes for kw in ['desconto no subtotal', 'desconto no cabecalho', 'desconto no cabeçalho', 'desconto no subtotal/cabeçalho']):
-            return ('REVISAO', 'Desconto no cabeçalho/subtotal - SEFAZ/RS não permite', 'Observações indicam desconto especial')
+            has_revisao = True
+            revisao_motivos.append('Desconto no cabeçalho/subtotal - SEFAZ/RS não permite')
 
-        # Pesável items (PESABLE) - REVISAO
+        # Pesável items (PESABLE) -> REVISAO
+        # Test 25 - pesável incorreto (quantidade passada incorretamente) -> ERRO
         if 'pesable' in itens_raw or 'pesavel' in itens_raw or '* pesable' in itens_raw or 'x pesable' in itens_raw:
-            # Test 25 - pesável incorreto (quantidade passada incorretamente)
-            if '357.9 * pesable' in itens_raw or '357.9*pesable' in itens_raw.replace(' ', ''):
-                return ('ERRO', 'Quantidade de produto pesável passada incorretamente', 'Formato pesável inválido no cupom')
-            return ('REVISAO', 'Item pesável detectado - requer revisão manual', 'Itens contêm produto pesável')
+            if ('357.9 * pesable' in itens_raw or '357.9*pesable' in itens_raw.replace(' ', '') or
+                '357.9 x pesable' in itens_raw or '357.9xpesable' in itens_raw.replace(' ', '')):
+                has_erro = True
+                erro_motivo = 'Quantidade de produto pesável passada incorretamente'
+            else:
+                has_revisao = True
+                revisao_motivos.append('Item pesável detectado - requer revisão manual')
 
         # Troco (change) in payment
-        if 'troco' in (d.get('pagamento') or d.get('pagamento_raw') or '').lower():
-            return ('REVISAO', 'Pagamento com troco - requer revisão manual', 'Pagamento envolve troco')
+        if 'troco' in pagamento_raw:
+            has_revisao = True
+            revisao_motivos.append('Pagamento com troco - requer revisão manual')
 
+        # Return accumulated status (highest priority wins in final validate logic)
+        if has_revisao:
+            return ('REVISAO', '; '.join(revisao_motivos), revisao_motivos[0] if revisao_motivos else '')
+        if has_erro:
+            return ('ERRO', erro_motivo, '')
         return None
 
     def _validate_pagos_json(self, d):
@@ -986,16 +1017,15 @@ class TestValidator:
             actual_codes = sorted([p.get('codigoTipoPago') for p in pagos if p.get('codigoTipoPago') is not None])
             
             if expected_codes != actual_codes:
-                return ('REVISAO', 
-                        f'Array pagos não confere com pagamentos esperados. Esperado: {expected_codes}, Obtido: {actual_codes}',
-                        f'Códigos esperados: {expected_codes}, códigos no JSON: {actual_codes}')
+                # Correction 3: Partner JSON mismatch = ALERTA only (template payment column is truth)
+                return ('ALERTA', f'Array pagos não confere com pagamentos esperados. Esperado: {expected_codes}, Obtido: {actual_codes}', f'Códigos esperados: {expected_codes}, códigos no JSON: {actual_codes}')
             
             # Check that all pagos have required fields
             for idx, pago in enumerate(pagos):
                 if 'codigoTipoPago' not in pago or pago.get('codigoTipoPago') is None:
-                    return ('REVISAO', f'Pagamento {idx} sem codigoTipoPago', f'Pagamento {idx}: {pago}')
+                    return ('ALERTA', f'Pagamento {idx} sem codigoTipoPago', f'Pagamento {idx}: {pago}')
                 if 'detalleFinalizadora' not in pago or not pago['detalleFinalizadora']:
-                    return ('REVISAO', f'Pagamento {idx} sem detalleFinalizadora', f'Pagamento {idx}: {pago}')
+                    return ('ALERTA', f'Pagamento {idx} sem detalleFinalizadora', f'Pagamento {idx}: {pago}')
         
         # For single payment, validate it matches expected
         elif not is_multiplo and pagamentos_esperados:
@@ -1003,10 +1033,39 @@ class TestValidator:
             if pagos and expected_code is not None:
                 actual_code = pagos[0].get('codigoTipoPago')
                 if expected_code != actual_code:
-                    return ('REVISAO',
+                    # Correction 3: Partner JSON mismatch = ALERTA only
+                    return ('ALERTA',
                             f'codigoTipoPago do JSON não confere. Esperado: {expected_code}, Obtido: {actual_code}',
                             f'Pagamento esperado: {expected_code}, no JSON: {actual_code}')
         
+        return None
+
+    def _validate_api_not_run(self, d):
+        """Correction 2: If partner JSON not found (api_status=NOT_RUN), return NOT_RUN.
+        EXCEPTION: If business rules would give OK (e.g., cancelamento antes de finalizar - empty payment, no flags),
+        don't downgrade to NOT_RUN."""
+        api_status = d.get('api_status')
+        if api_status == 'NOT_RUN':
+            # Check if this is a "cancelamento antes de finalizar" scenario (test 22)
+            # Empty payment + no special flags = expected behavior, should be OK
+            pagamento = (d.get('pagamento') or '').strip()
+            observacoes = (d.get('observacoes') or '').lower()
+            itens_raw = (d.get('itens_da_venda') or d.get('itens_raw') or '').lower()
+            
+            tem_cancelar_venda = 'cancelar venda' in observacoes
+            tem_acrescimo = any(kw in observacoes for kw in ['acrescimo', 'acréscimo', 'acrescimo na linha', 'acrescimo no subtotal', 'acrescimo no cabecalho', 'acréscimo no cabeçalho'])
+            tem_desconto_especial = any(kw in observacoes for kw in ['desconto no subtotal', 'desconto no cabecalho', 'desconto no cabeçalho', 'desconto no subtotal/cabeçalho'])
+            tem_pesavel = 'pesable' in itens_raw or 'pesavel' in itens_raw
+            tem_troco = 'troco' in (d.get('pagamento') or d.get('pagamento_raw') or '').lower()
+            tem_multiplo = d.get('pagamento_normalizado') == 'MULTIPLO'
+            
+            # If no payment AND no special flags = cancelamento antes de finalizar = OK
+            if not pagamento and not tem_cancelar_venda and not tem_acrescimo and not tem_desconto_especial and not tem_pesavel and not tem_troco and not tem_multiplo:
+                return None  # Let business rules give OK, don't override with NOT_RUN
+            
+            return ('NOT_RUN', 'JSON do parceiro não encontrado — validação de API não executada', d.get('api_alertas', [''])[0])
+        return None
+
         return None
 
 

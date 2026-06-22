@@ -17,14 +17,13 @@ from .payment_codes import (
     is_pix_payment,
 )
 
-__version__ = "2.1.0"
-__date__ = "2026-06-21"  # Data de hoje: 21/06/2026
+__version__ = "2.0.0"
 __author__ = "ValidaAI Team"
 API_SALES_AVAILABLE = True
 
 __all__ = [
     "TestScriptReader",
-    "ItemParser",
+    "ItemParser", 
     "PaymentNormalizer",
     "TestValidator",
     "ResultExporter",
@@ -37,5 +36,4 @@ __all__ = [
     "is_card_payment",
     "is_pix_payment",
     "__version__",
-    "__date__",
 ]
