@@ -132,7 +132,7 @@ class ValidationScheduler:
             base_path = output_dir / f"validacao_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{etapa.replace(' ', '_')}_v2.0"
             
             metadata = {
-                "app_version": "2.0.0",
+                "app_version": "2.1.0",
                 "etapa": etapa,
                 "roteiro": str(roteiro_path),
                 "audit_file": audit_file,
@@ -149,7 +149,7 @@ class ValidationScheduler:
             pipeline = ExportPipeline(pipeline_config)
             
             export_results = pipeline.run(validated_tests, Path(".") / base_path, {
-                "app_version": "2.0.0",
+                "app_version": "2.1.0",
                 "etapa": etapa,
                 "generated_at": datetime.now().isoformat(),
             })

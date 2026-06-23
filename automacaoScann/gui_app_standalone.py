@@ -51,8 +51,8 @@ from validaai import get_payment_label, format_pagamentos_for_log
 BASE_DIR = Path(__file__).resolve().parent
 
 # Version info
-APP_VERSION = "2.0.0"
-APP_BUILD_DATE = "2026-06-18"
+APP_VERSION = "2.1.0"
+APP_BUILD_DATE = "2026-06-21"
 
 
 # ------------------------------------------------------------------

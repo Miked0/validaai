@@ -9,6 +9,8 @@ from typing import List, Dict, Any, Optional
 from decimal import Decimal, ROUND_HALF_UP
 import json
 
+from .logger import ValidationLogger, LogLevel, TestStatus
+
 
 class TestValidator:
     """Validates test cases according to SDD Scanntech business rules."""
@@ -17,6 +19,7 @@ class TestValidator:
         self,
         tolerance: float = 0.01,
         partner_jsons: Optional[Dict[str, Any]] = None,
+        logger: Optional['ValidationLogger'] = None,
     ):
         """
         Initialize the validator.
@@ -24,9 +27,11 @@ class TestValidator:
         Args:
             tolerance: Base tolerance for value comparisons (default 0.01).
             partner_jsons: Dict mapping test/cupom -> partner JSON from audit export.
+            logger: Optional ValidationLogger instance for structured logging.
         """
         self.tolerance = tolerance
         self.partner_jsons = partner_jsons or {}
+        self.logger = logger
 
     def validate(self, test_dict: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -68,6 +73,15 @@ class TestValidator:
         etapa1_result = self._validate_etapa1_itens(result)
         result['etapa1_itens'] = etapa1_result
         
+        if self.logger:
+            self.logger.log_test_result(
+                test_num=result.get('teste', 0),
+                status=etapa1_result['json'],
+                motivo=etapa1_result['json_motivo'],
+                resumo_etapas=f"Etapa 1: {etapa1_result['json']} - {etapa1_result['json_motivo']}",
+                detalhes_etapas={'Etapa 1 (Itens)': {'status': etapa1_result['json'], 'motivo': etapa1_result['json_motivo']}}
+            )
+        
         if etapa1_result['json'] == 'ERRO':
             erro_status = 'ERRO_ITENS'
             erro_motivo = etapa1_result['json_motivo']
@@ -80,6 +94,15 @@ class TestValidator:
         # ============================================================
         etapa2_result = self._validate_etapa2_pagamento(result)
         result['etapa2_pagamento'] = etapa2_result
+        
+        if self.logger:
+            self.logger.log_test_result(
+                test_num=result.get('teste', 0),
+                status=etapa2_result['json'],
+                motivo=etapa2_result['json_motivo'],
+                resumo_etapas=f"Etapa 2: {etapa2_result['json']} - {etapa2_result['json_motivo']}",
+                detalhes_etapas={'Etapa 2 (Pagamento)': {'status': etapa2_result['json'], 'motivo': etapa2_result['json_motivo']}}
+            )
         
         if etapa2_result['json'] == 'ERRO':
             if not erro_status:  # Don't override ERRO_ITENS
@@ -95,6 +118,15 @@ class TestValidator:
         etapa3_result = self._validate_etapa3_valores(result)
         result['etapa3_valores'] = etapa3_result
         
+        if self.logger:
+            self.logger.log_test_result(
+                test_num=result.get('teste', 0),
+                status=etapa3_result['json'],
+                motivo=etapa3_result['json_motivo'],
+                resumo_etapas=f"Etapa 3: {etapa3_result['json']} - {etapa3_result['json_motivo']}",
+                detalhes_etapas={'Etapa 3 (Valores)': {'status': etapa3_result['json'], 'motivo': etapa3_result['json_motivo']}}
+            )
+        
         if etapa3_result['json'] == 'ERRO':
             if not erro_status:
                 erro_status = 'ERRO_VALORES'
@@ -108,6 +140,23 @@ class TestValidator:
         # ============================================================
         etapa4_result = self._validate_etapa4_observacoes(result)
         result['etapa4_observacoes'] = etapa4_result
+        
+        if self.logger:
+            # Etapa 4 returns a dict of checks, need to summarize
+            checks = {k: v for k, v in etapa4_result.items() if k != 'json'}
+            motivos = []
+            for check_name, check_result in etapa4_result.items():
+                if check_result in ('REVISAO', 'ERRO'):
+                    motivos.append(f"{check_name}: {check_result}")
+            
+            if self.logger:
+                self.logger.log_test_result(
+                    test_num=result.get('teste', 0),
+                    status='REVISAO' if any(v in ('REVISAO', 'ERRO') for v in etapa4_result.values()) else 'OK',
+                    motivo='; '.join(motivos) if motivos else 'Observações OK',
+                    resumo_etapas=f"Etapa 4: {'; '.join(motivos) if motivos else 'OK'}",
+                    detalhes_etapas={f'Etapa 4 ({k})': {'status': v, 'motivo': v} for k, v in etapa4_result.items()}
+                )
         
         for check_name, check_result in etapa4_result.items():
             if check_result == 'ERRO':
@@ -142,6 +191,39 @@ class TestValidator:
         else:
             result['status_final'] = 'OK'
             result['motivo_status'] = 'Todos os campos válidos e consistentes'
+
+        # Final logging with complete test result
+        if self.logger:
+            # Build comprehensive resumo_etapas
+            etapa_statuses = []
+            for etapa_key, etapa_label in [
+                ('etapa1_itens', 'Itens'),
+                ('etapa2_pagamento', 'Pagamento'),
+                ('etapa3_valores', 'Valores'),
+                ('etapa4_observacoes', 'Obs'),
+            ]:
+                etapa_data = result.get(etapa_key, {})
+                etapa_status = etapa_data.get('json', 'N/A')
+                etapa_motivo = etapa_data.get('json_motivo', '')
+                if etapa_status in ('REVISAO', 'ERRO'):
+                    etapa_statuses.append(f"{etapa_label}: {etapa_status} ({etapa_motivo[:30]})")
+                else:
+                    etapa_statuses.append(f"{etapa_label}: {etapa_status}")
+            
+            resumo_final = ' | '.join(etapa_statuses)
+            
+            self.logger.log_test_result(
+                test_num=result.get('teste', 0),
+                status=result['status_final'],
+                motivo=result['motivo_status'],
+                resumo_etapas=resumo_final,
+                detalhes_etapas={
+                    'Etapa 1 (Itens)': {'status': result.get('etapa1_itens', {}).get('json', 'N/A'), 'motivo': result.get('etapa1_itens', {}).get('json_motivo', '')},
+                    'Etapa 2 (Pagamento)': {'status': result.get('etapa2_pagamento', {}).get('json', 'N/A'), 'motivo': result.get('etapa2_pagamento', {}).get('json_motivo', '')},
+                    'Etapa 3 (Valores)': {'status': result.get('etapa3_valores', {}).get('json', 'N/A'), 'motivo': result.get('etapa3_valores', {}).get('json_motivo', '')},
+                    'Etapa 4 (Obs)': {'status': result.get('etapa4_observacoes', {}).get('json', 'N/A'), 'motivo': result.get('etapa4_observacoes', {}).get('json_motivo', '')},
+                }
+            )
 
         # Consolidate alerts
         all_alertas = []

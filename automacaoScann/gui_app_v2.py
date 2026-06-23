@@ -80,8 +80,8 @@ except ImportError:
 from core.exporters import ExportPipeline, ExportConfig
 
 # App metadata
-APP_VERSION = "2.0.0"
-APP_BUILD_DATE = "2026-06-18"
+APP_VERSION = "2.1.0"
+APP_BUILD_DATE = "2026-06-21"
 
 
 class ValidationController:

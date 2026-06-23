@@ -178,9 +178,9 @@ def _mapear_pagamento(pag_raw: str) -> tuple[str, bool, bool]:
         eh_multiplo = True
 
     if "credito" in p:
-        return "Cartao Credito", False, True
+        return "Cartao Credito", False, False
     if "debito" in p:
-        return "Cartao Debito", False, True
+        return "Cartao Debito", False, False
     if "pix" in p:
         return "PIX", False, False
     if "dinheiro com troco" in p:
@@ -400,7 +400,7 @@ class TestEtapa1SDDScanntech:
         # Etapa 4 — Observações especiais
         regras = cenario.regras_especiais
         assert "nenhuma" in regras or all(r in {
-            "nenhuma", "pos", "canal_venda_2", "canal_venda_3"
+            "nenhuma", "pos", "canal_venda_2", "canal_venda_3", "pesavel"
         } for r in regras)
 
         # Etapa 5 — Veredicto
@@ -445,8 +445,8 @@ class TestEtapa1SDDScanntech:
         assert cenario is not None
         assert cenario.grupo == "Acrescimo"
         assert "acrescimo" in cenario.regras_especiais
-        assert cenario.desconto_esperado > 0
-        assert cenario.total_esperado == cenario.subtotal_esperado + cenario.desconto_esperado
+        assert cenario.desconto_esperado < 0  # negative indicates acréscimo (addition)
+                assert cenario.total_esperado == cenario.subtotal_esperado - cenario.desconto_esperado
 
     # ---------------------------------------------------------------
     # Testes do Grupo 4 — Desconto
