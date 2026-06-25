@@ -177,8 +177,53 @@ class TestScriptReader:
             if not header:
                 continue
 
+            # Get column indices for key fields (use first occurrence of each)
+            col_indices = {}
+            for i, h in enumerate(header):
+                h_lower = h.strip().lower() if h else ''
+                if h_lower and h_lower not in col_indices:
+                    col_indices[h_lower] = i
+            
+            # Map keys to indices
+            def get_col_idx(*possible_names):
+                for name in possible_names:
+                    if name.lower() in col_indices:
+                        return col_indices[name.lower()]
+                return None
+            
+            nfce_idx = get_col_idx('nfce', 'nfc-e')
+            sat_idx = get_col_idx('sat')
+            ecf_idx = get_col_idx('ecf')
+            cupom_idx = get_col_idx('cupom', 'numero cupom', 'numero do cupom')
+            json_idx = get_col_idx('json')
+            minoristas_idx = get_col_idx('minoristas')
+            itens_idx = get_col_idx('itens da venda', 'articulos movimiento', 'itens')
+            pagamento_idx = get_col_idx('pagamento')
+            observacoes_idx = get_col_idx('observacoes')
+            observacao_parceiro_idx = get_col_idx('observacoes.1')
+            tipo_promo_idx = get_col_idx('tipo promo', 'tipo promocao', 'tipo promo', 'promotion_type', 'tipo')
+            subtotal_idx = get_col_idx('sub-total', 'subtotal')
+            total_idx = get_col_idx('total')
+            desconto_idx = get_col_idx('desconto')
+            
             rows = list(ws.iter_rows(min_row=start_idx, values_only=True))
-            seen_tests = set()
+            seen_tests = {}  # t_key -> row data (keep best one with valid cupom)
+
+            def _get_val(vals_list, idx):
+                """Get value from list by index, return '' if out of bounds."""
+                if idx is not None and idx < len(vals_list):
+                    v = vals_list[idx]
+                    if v and str(v).strip():
+                        val = str(v).strip()
+                        # Skip placeholder values
+                        if val.lower() in ['(status)', 'status', '(pendente)', 'pendente', '(aguardando)', 'aguardando', 'none', 'null']:
+                            return ''
+                        return val
+                return ''
+
+            # Reset rows iterator
+            rows = list(ws.iter_rows(min_row=start_idx, values_only=True))
+
             for offset, row in enumerate(rows, start=start_idx):
                 vals = [str(c).strip() if c is not None else '' for c in row]
                 if len(vals) < len(header):
@@ -208,8 +253,28 @@ class TestScriptReader:
                     t_key = str(last_num + 1)
                 
                 if t_key in seen_tests:
+                    # Check if existing one has valid cupom, if not replace with this one
+                    existing_vals = seen_tests[t_key]
+                    # Use the new index-based extraction
+                    existing_nfce = _get_val(existing_vals, nfce_idx)
+                    existing_sat = _get_val(existing_vals, sat_idx)
+                    existing_ecf = _get_val(existing_vals, ecf_idx)
+                    existing_cupom = _get_val(existing_vals, cupom_idx)
+                    
+                    # Check if this row has better cupom data
+                    this_nfce = _get_val(vals, nfce_idx)
+                    this_sat = _get_val(vals, sat_idx)
+                    this_ecf = _get_val(vals, ecf_idx)
+                    this_cupom = _get_val(vals, cupom_idx)
+                    
+                    existing_has_cupom = any(v and v.strip() for v in [existing_nfce, existing_sat, existing_ecf, existing_cupom])
+                    this_has_cupom = any(v and v.strip() for v in [this_nfce, this_sat, this_ecf, this_cupom])
+                    
+                    if not existing_has_cupom and this_has_cupom:
+                        seen_tests[t_key] = vals  # Replace with better row (store vals list)
+                    # else keep existing
                     continue
-                seen_tests.add(t_key)
+                seen_tests[t_key] = vals  # Store vals list (maintains column order)
                 # Find column keys (case-insensitive)
                 subtotal_key = next((k for k in rd if k and k.lower() in ['sub-total', 'subtotal']), 'Sub-Total')
                 total_key = next((k for k in rd if k and k.lower() in ['total']), 'Total')
@@ -230,38 +295,36 @@ class TestScriptReader:
                 json_key = next((k for k in rd if k and k.lower() in ['json']), 'Json')
                 minoristas_key = next((k for k in rd if k and k.lower() in ['minoristas']), 'Minoristas')
                 
-                def _first_nonempty(vals_list, header_list, key):
-                    matches = []
-                    for i, h in enumerate(header_list):
-                        if h and h.strip().lower() == key.strip().lower():
-                            v = vals_list[i] if i < len(vals_list) else ''
-                            if v and str(v).strip():
-                                matches.append(str(v).strip())
-                    return matches[-1] if matches else ''
-
                 # Cupom: priority NFCE (under "Numero de cupom") > SAT > ECF > explicit Cupom
-                cupom_val = (_first_nonempty(vals, header, nfce_key) or 
-                            _first_nonempty(vals, header, sat_key) or 
-                            _first_nonempty(vals, header, ecf_key) or 
-                            _first_nonempty(vals, header, cupom_key))
+                cupom_val = (_get_val(vals, nfce_idx) or 
+                            _get_val(vals, sat_idx) or 
+                            _get_val(vals, ecf_idx) or 
+                            _get_val(vals, cupom_idx))
+                
+                # Also get individual fields using index-based extraction for consistency
+                sat_val = _get_val(vals, sat_idx)
+                ecf_val = _get_val(vals, ecf_idx)
+                nfce_val = _get_val(vals, nfce_idx)
+                json_val = _get_val(vals, json_idx)
+                minoristas_val = _get_val(vals, minoristas_idx)
                 
                 std = {
                     'teste': float(t_key) if '.' in t_key else int(t_key),
                     'linha_original': f"{sheet_name}!{offset}",
                     'bloco_atual': sheet_name.strip().upper(),
                     'tipo_promo': rd.get(tipo_promo_key, ''),
-                    'itens_da_venda': rd.get(itens_key, ''),
-                    'pagamento': rd.get(pagamento_key, ''),
-                    'observacoes': _first_nonempty(vals, header, observacoes_key),
-                    'observacao_parceiro': _first_nonempty(vals, header, observacao_parceiro_key),
-                    'subtotal_esperado': rd.get(subtotal_key, ''),
-                    'desconto_esperado': rd.get(desconto_key, '0') or '0',
-                    'total_esperado': rd.get(total_key, ''),
-                    'sat': _first_nonempty(vals, header, sat_key),
-                    'ecf': _first_nonempty(vals, header, ecf_key),
-                    'nfce': _first_nonempty(vals, header, nfce_key),
-                    'json': rd.get(json_key, ''),
-                    'minoristas': rd.get(minoristas_key, ''),
+                    'itens_da_venda': _get_val(vals, itens_idx),
+                    'pagamento': _get_val(vals, pagamento_idx),
+                    'observacoes': _get_val(vals, observacoes_idx),
+                    'observacao_parceiro': _get_val(vals, observacao_parceiro_idx),
+                    'subtotal_esperado': _get_val(vals, subtotal_idx),
+                    'desconto_esperado': _get_val(vals, desconto_idx) or '0',
+                    'total_esperado': _get_val(vals, total_idx),
+                    'sat': sat_val,
+                    'ecf': ecf_val,
+                    'nfce': nfce_val,
+                    'json': json_val,
+                    'minoristas': minoristas_val,
                     # Cupom: priority NFCE > SAT > ECF > explicit Cupom
                     'cupom': cupom_val,
                     # Include product catalog for downstream use
@@ -308,8 +371,53 @@ class TestScriptReader:
             if not header:
                 continue
 
+            # Get column indices for key fields (use first occurrence of each)
+            col_indices = {}
+            for i, h in enumerate(header):
+                h_lower = h.strip().lower() if h else ''
+                if h_lower and h_lower not in col_indices:
+                    col_indices[h_lower] = i
+            
+            # Map keys to indices
+            def get_col_idx(*possible_names):
+                for name in possible_names:
+                    if name.lower() in col_indices:
+                        return col_indices[name.lower()]
+                return None
+            
+            nfce_idx = get_col_idx('nfce', 'nfc-e')
+            sat_idx = get_col_idx('sat')
+            ecf_idx = get_col_idx('ecf')
+            cupom_idx = get_col_idx('cupom', 'numero cupom', 'numero do cupom')
+            json_idx = get_col_idx('json')
+            minoristas_idx = get_col_idx('minoristas')
+            itens_idx = get_col_idx('itens da venda', 'articulos movimiento', 'itens')
+            pagamento_idx = get_col_idx('pagamento')
+            observacoes_idx = get_col_idx('observacoes')
+            observacao_parceiro_idx = get_col_idx('observacoes.1')
+            tipo_promo_idx = get_col_idx('tipo promo', 'tipo promocao', 'tipo promo', 'promotion_type', 'tipo')
+            subtotal_idx = get_col_idx('sub-total', 'subtotal')
+            total_idx = get_col_idx('total')
+            desconto_idx = get_col_idx('desconto')
+            
             rows = list(ws.iter_rows(min_row=start_idx, values_only=True))
-            seen_tests = set()
+            seen_tests = {}  # t_key -> row data (keep best one with valid cupom)
+
+            def _get_val(vals_list, idx):
+                """Get value from list by index, return '' if out of bounds."""
+                if idx is not None and idx < len(vals_list):
+                    v = vals_list[idx]
+                    if v and str(v).strip():
+                        val = str(v).strip()
+                        # Skip placeholder values
+                        if val.lower() in ['(status)', 'status', '(pendente)', 'pendente', '(aguardando)', 'aguardando', 'none', 'null']:
+                            return ''
+                        return val
+                return ''
+
+            # Reset rows iterator
+            rows = list(ws.iter_rows(min_row=start_idx, values_only=True))
+
             for offset, row in enumerate(rows, start=start_idx):
                 vals = [str(c).strip() if c is not None else '' for c in row]
                 if len(vals) < len(header):
@@ -345,10 +453,33 @@ class TestScriptReader:
                     t_key = str(last_num + 1)
                 
                 if t_key in seen_tests:
+                    # Check if existing one has valid cupom, if not replace with this one
+                    existing_vals = seen_tests[t_key]
+                    # Use the new index-based extraction
+                    existing_nfce = _get_val(existing_vals, nfce_idx)
+                    existing_sat = _get_val(existing_vals, sat_idx)
+                    existing_ecf = _get_val(existing_vals, ecf_idx)
+                    existing_cupom = _get_val(existing_vals, cupom_idx)
+                    
+                    # Check if this row has better cupom data
+                    this_nfce = _get_val(vals, nfce_idx)
+                    this_sat = _get_val(vals, sat_idx)
+                    this_ecf = _get_val(vals, ecf_idx)
+                    this_cupom = _get_val(vals, cupom_idx)
+                    
+                    existing_has_cupom = any(v and v.strip() for v in [existing_nfce, existing_sat, existing_ecf, existing_cupom])
+                    this_has_cupom = any(v and v.strip() for v in [this_nfce, this_sat, this_ecf, this_cupom])
+                    
+                    if not existing_has_cupom and this_has_cupom:
+                        seen_tests[t_key] = vals  # Replace with better row (store vals list)
+                    # else keep existing
                     continue
-                seen_tests.add(t_key)
+                seen_tests[t_key] = vals  # Store vals list (maintains column order)
 
-                # Find column keys (case-insensitive)
+            # Build all_tests from seen_tests AFTER processing all rows (handles duplicates correctly)
+            for t_key, vals in seen_tests.items():
+                rd = dict(zip(header, vals))
+                
                 # Find column keys (case-insensitive)
                 subtotal_key = next((k for k in rd if k and k.lower() in ['sub-total', 'subtotal']), 'Sub-Total')
                 total_key = next((k for k in rd if k and k.lower() in ['total']), 'Total')
@@ -369,38 +500,36 @@ class TestScriptReader:
                 json_key = next((k for k in rd if k and k.lower() in ['json']), 'Json')
                 minoristas_key = next((k for k in rd if k and k.lower() in ['minoristas']), 'Minoristas')
                 
-                def _first_nonempty(vals_list, header_list, key):
-                    matches = []
-                    for i, h in enumerate(header_list):
-                        if h and h.strip().lower() == key.strip().lower():
-                            v = vals_list[i] if i < len(vals_list) else ''
-                            if v and str(v).strip():
-                                matches.append(str(v).strip())
-                    return matches[-1] if matches else ''
-
                 # Cupom: priority NFCE (under "Numero de cupom") > SAT > ECF > explicit Cupom
-                cupom_val = (_first_nonempty(vals, header, nfce_key) or 
-                            _first_nonempty(vals, header, sat_key) or 
-                            _first_nonempty(vals, header, ecf_key) or 
-                            _first_nonempty(vals, header, cupom_key))
+                cupom_val = (_get_val(vals, nfce_idx) or 
+                            _get_val(vals, sat_idx) or 
+                            _get_val(vals, ecf_idx) or 
+                            _get_val(vals, cupom_idx))
+                
+                # Also get individual fields using index-based extraction for consistency
+                sat_val = _get_val(vals, sat_idx)
+                ecf_val = _get_val(vals, ecf_idx)
+                nfce_val = _get_val(vals, nfce_idx)
+                json_val = _get_val(vals, json_idx)
+                minoristas_val = _get_val(vals, minoristas_idx)
                 
                 std = {
                     'teste': float(t_key) if '.' in t_key else int(t_key),
                     'linha_original': f"{sheet_name}!{offset}",
                     'bloco_atual': sheet_name.strip().upper(),
                     'tipo_promo': rd.get(tipo_promo_key, ''),
-                    'itens_da_venda': rd.get(itens_key, ''),
-                    'pagamento': rd.get(pagamento_key, ''),
-                    'observacoes': _first_nonempty(vals, header, observacoes_key),
-                    'observacao_parceiro': _first_nonempty(vals, header, observacao_parceiro_key),
-                    'subtotal_esperado': rd.get(subtotal_key, ''),
-                    'desconto_esperado': rd.get(desconto_key, '0') or '0',
-                    'total_esperado': rd.get(total_key, ''),
-                    'sat': _first_nonempty(vals, header, sat_key),
-                    'ecf': _first_nonempty(vals, header, ecf_key),
-                    'nfce': _first_nonempty(vals, header, nfce_key),
-                    'json': rd.get(json_key, ''),
-                    'minoristas': rd.get(minoristas_key, ''),
+                    'itens_da_venda': _get_val(vals, itens_idx),
+                    'pagamento': _get_val(vals, pagamento_idx),
+                    'observacoes': _get_val(vals, observacoes_idx),
+                    'observacao_parceiro': _get_val(vals, observacao_parceiro_idx),
+                    'subtotal_esperado': _get_val(vals, subtotal_idx),
+                    'desconto_esperado': _get_val(vals, desconto_idx) or '0',
+                    'total_esperado': _get_val(vals, total_idx),
+                    'sat': sat_val,
+                    'ecf': ecf_val,
+                    'nfce': nfce_val,
+                    'json': json_val,
+                    'minoristas': minoristas_val,
                     # Cupom: priority NFCE > SAT > ECF > explicit Cupom
                     'cupom': cupom_val,
                     # Include product catalog for downstream use

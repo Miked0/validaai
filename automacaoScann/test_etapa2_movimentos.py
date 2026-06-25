@@ -35,10 +35,11 @@ validated_tests = [validator.validate(t) for t in normalized_tests]
 print('5. Carregando JSONs do parceiro (auditoria + movimentos)...')
 api_builder = APISalesBuilder()
 
-audit_file = '/home/ubuntu/validaai_test_data/doc_0f4caf1d2b79_export_tickets_audit_companyId201901_auditDate2026-06-22_87bda8_24-06-2026_15-38.xlsx'
+# NOVO ARQUIVO DE AUDITORIA ATUALIZADO (tem todos os tickets)
+audit_file = '/home/ubuntu/.hermes/cache/documents/doc_dc51504a8b81_export_tickets_audit_companyId201901_auditDate2026-06-22_ec1c34_25-06-2026_07-44.xlsx'
 partner_jsons = api_builder._load_partner_jsons(audit_file)
 print(f'   JSONs de auditoria: {len(partner_jsons)}')
-
+print(f'   Testes com JSON do parceiro: {sorted(partner_jsons.keys())}')
 # 5b. Load export_movimentos and build JSONs per cupom
 print('5b. Carregando export_movimentos e construindo JSONs por cupom...')
 movimentos_file = '/home/ubuntu/validaai_test_data/doc_c0c58b0e0c99_export_tickets_companyId201901_from2026-06-22_to2026-06-22_7892db_24-06-2026_15-38.xlsx'
@@ -122,16 +123,37 @@ for cupom, group in df.groupby('Número'):
 print(f'   JSONs de movimentos construidos: {len(movimentos_jsons)}')
 
 # Merge: movimentos_jsons has priority (has applied promotions)
-all_partner_jsons = {**partner_jsons, **movimentos_jsons}
+# Merge: audit has priority for JSONs with pagos (flat structure), otherwise movimentos (has promoções applied)
+all_partner_jsons = {}
+for cupom in set(partner_jsons.keys()) | set(movimentos_jsons.keys()):
+    audit_json = partner_jsons.get(cupom)
+    mov_json = movimentos_jsons.get(cupom)
+    
+    # Check if audit JSON has pagos (flat structure) or movimiento.pagos (wrapped structure)
+    audit_has_pagos = False
+    if audit_json:
+        if 'pagos' in audit_json and audit_json['pagos']:
+            audit_has_pagos = True
+        elif 'movimiento' in audit_json and audit_json['movimiento'].get('pagos'):
+            audit_has_pagos = True
+    
+    # Prefer audit JSON if it has pagos, otherwise use movimentos (has promoções)
+    if audit_has_pagos:
+        all_partner_jsons[cupom] = audit_json
+    elif mov_json:
+        all_partner_jsons[cupom] = mov_json
+    else:
+        all_partner_jsons[cupom] = audit_json
+
 print(f'   Total JSONs combinados: {len(all_partner_jsons)}')
 
-# 5c. Add pagos from validated tests to movimento JSONs using api_builder
 # 5c. Compare pagamentos do roteiro vs pagos do export_movimentos
 print('5c. Comparando pagamentos do roteiro vs export_movimentos...')
 for cupom, group in df.groupby('Número'):
-    if cupom in all_partner_jsons and 'movimiento' in all_partner_jsons[cupom]:
+    if cupom in all_partner_jsons:
         partner_json = all_partner_jsons[cupom]
-        movimiento = partner_json['movimiento']
+        # Handle both flat and wrapped structure
+        movimiento = partner_json.get('movimiento', partner_json)
         
         # Get expected payments from validated test for this cupom
         test_for_cupom = next((t for t in validated_tests if str(t.get('cupom', '')).strip() == cupom), None)
@@ -155,19 +177,27 @@ for cupom, group in df.groupby('Número'):
                     id_cliente='',
                     documento_cliente='',
                 )
-                # Update pagos in partner_json
+                # Update pagos in partner_json (handle both structures)
                 if 'movimiento' in built_json:
-                    movimiento['pagos'] = built_json['movimiento'].get('pagos', [])
+                    pagos_built = built_json['movimiento'].get('pagos', [])
+                    # Apply to correct structure
+                    if 'movimiento' in partner_json:
+                        partner_json['movimiento']['pagos'] = pagos_built
+                    else:
+                        partner_json['pagos'] = pagos_built
 
 print(f'   Total JSONs combinados: {len(all_partner_jsons)}')
 
 # 6. Re-validate with partner JSONs (combines business rules + partner JSON validation)
 print('6. Re-validando com JSONs do parceiro...')
-revalidator = TestValidator(tolerance=0.01)
+# Pass updated partner JSONs (with pagos from roteiro) to validator
+revalidator = TestValidator(tolerance=0.01, partner_jsons=all_partner_jsons)
 revalidated_tests = []
 for t in validated_tests:
     test_cupom = str(t.get('cupom', '')).strip()
     if test_cupom in all_partner_jsons:
+        # Use the updated partner JSON (with pagos from roteiro) as BOTH sale_json and partner reference
+        # This ensures pagos_interno is populated (from sale_json) and pagos_parceiro works (from partner_jsons)
         t['sale_json'] = all_partner_jsons[test_cupom]
     revalidated_tests.append(revalidator.validate(t))
 validated_tests = revalidated_tests
