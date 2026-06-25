@@ -59,7 +59,7 @@
     }
   },
   "scheduler": {
-    "enabled": false,
+    "enabled": true,
     "cron": "0 6 * * 1-5",
     "roteiro_path": "biblioteca/TEMPLATE_COM_BIN_NOVO.xlsx",
     "etapa": "ETAPA 1",

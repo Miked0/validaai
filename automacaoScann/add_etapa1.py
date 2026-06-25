@@ -1,6 +1,6 @@
 import openpyxl
 
-wb = openpyxl.load_workbook('C:/Users/Mike/validaai/automacaoScann/biblioteca/TEMPLATE_COM_BIN_NOVO.xlsx')
+wb = openpyxl.load_workbook('biblioteca/TEMPLATE_COM_BIN_NOVO.xlsx')
 
 # ============================================================
 # ABA: ETAPA 1 - 27 testes completos
@@ -51,5 +51,5 @@ for row_idx, test_data in enumerate(testes, 8):
     for col_idx, value in enumerate(test_data, 1):
         ws.cell(row=row_idx, column=col_idx, value=value)
 
-wb.save('C:/Users/Mike/validaai/automacaoScann/biblioteca/TEMPLATE_COM_BIN_NOVO.xlsx')
+wb.save('biblioteca/TEMPLATE_COM_BIN_NOVO.xlsx')
 print('ETAPA 1 complete with 27 tests')

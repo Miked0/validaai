@@ -98,7 +98,15 @@ class PaymentNormalizer:
         obs_lower = observacoes.lower().strip() if observacoes else ''
         
         # Detect POS in observations or payment
-        tem_pos = 'pos' in obs_lower or 'pos' in pagamento_lower
+        # More comprehensive POS detection
+        tem_pos = any(keyword in obs_lower for keyword in [
+            'pos', 'pos.', 'pos ', 'p.o.s', 'terminal pos', 'terminalpos', 'maquina pos', 'maquininha pos'
+        ]) or any(keyword in pagamento_lower for keyword in [
+            'pos', 'pos.', 'pos ', 'p.o.s', 'terminal pos', 'terminalpos', 'maquina pos', 'maquininha pos'
+        ])
+        # Also check if payment contains card types which typically use POS
+        if any(keyword in pagamento_lower for keyword in ['cartao', 'cartão', 'credito', 'crédito', 'debito', 'débito', 'credit', 'debit']):
+            tem_pos = True
         
         # Detect canal de venda
         canal_venda = 1  # default

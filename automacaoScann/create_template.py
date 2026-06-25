@@ -85,5 +85,5 @@ ws_promo['B5'] = '7891000010860 - CAFE SOLUVEL NESCAFE TRADICAO REFIL 50G'
 ws_promo['A6'] = ''
 ws_promo['B6'] = '7891000306703 - CAFE SOLUVEL NESCAFE ORIGINAL SACHET 50G'
 
-wb.save('C:/Users/Mike/validaai/automacaoScann/biblioteca/TEMPLATE_COM_BIN_NOVO.xlsx')
+wb.save('biblioteca/TEMPLATE_COM_BIN_NOVO.xlsx')
 print('Base template saved')

@@ -1182,6 +1182,7 @@ class ValidaAIApp:
         self.roteiro_path = tk.StringVar()
         self.cupom_paths: List[str] = []
         self.audit_dir = tk.StringVar()
+        self.audit_movimentos_dir = tk.StringVar()
         self.output_path = tk.StringVar(value=str(BASE_DIR / "output" / "validacao_resultado.xlsx"))
         self.status_var = tk.StringVar(value="Pronto")
         self.progress_var = tk.DoubleVar(value=0.0)
@@ -1239,6 +1240,10 @@ class ValidaAIApp:
         ttk.Label(inp, text="Arquivo de export da auditoria (.xlsx):").grid(row=2, column=0, sticky=tk.W, pady=4)
         ttk.Entry(inp, textvariable=self.audit_dir, width=70).grid(row=2, column=1, padx=6, pady=4)
         ttk.Button(inp, text="Selecionar arquivo", command=self._select_audit_dir, style="Secondary.TButton").grid(row=2, column=2, padx=4)
+
+        ttk.Label(inp, text="Arquivo export_movimentos (.xlsx) [ETAPA 2/3]:").grid(row=3, column=0, sticky=tk.W, pady=4)
+        ttk.Entry(inp, textvariable=self.audit_movimentos_dir, width=70).grid(row=3, column=1, padx=6, pady=4)
+        ttk.Button(inp, text="Selecionar arquivo", command=self._select_audit_movimentos_dir, style="Secondary.TButton").grid(row=3, column=2, padx=4)
 
         inp.columnconfigure(1, weight=1)
 
@@ -1376,6 +1381,14 @@ class ValidaAIApp:
         if p:
             self.audit_dir.set(p)
 
+    def _select_audit_movimentos_dir(self):
+        p = filedialog.askopenfilename(
+            title="Selecionar arquivo export_movimentos (xlsx com movimentos da API para validar promoções)",
+            filetypes=[("Excel", "*.xlsx"), ("Todos", "*.*")]
+        )
+        if p:
+            self.audit_movimentos_dir.set(p)
+
     def _select_output(self):
         p = filedialog.asksaveasfilename(title="Salvar resultado como", defaultextension=".xlsx", filetypes=[("Excel", "*.xlsx"), ("CSV", "*.csv"), ("Todos", "*.*")], initialfile="validacao_resultado.xlsx")
         if p:
@@ -1452,7 +1465,7 @@ class ValidaAIApp:
                 if API_SALES_AVAILABLE:
                     api_builder = APISalesBuilder()
                     
-                    # Carregar JSONs do parceiro do arquivo de export da auditoria
+                    # Carregar JSONs do parceiro do arquivo de export da auditoria (requests)
                     audit_file = self.audit_dir.get().strip()
                     partner_jsons = {}
                     if audit_file and Path(audit_file).exists():
@@ -1465,6 +1478,28 @@ class ValidaAIApp:
                             self._log(f"   ERRO ao carregar JSONs do parceiro: {e}")
                     else:
                         self._log("   Arquivo de auditoria não informado ou não encontrado; pulando validação do JSON do parceiro.")
+                    
+                    # Carregar export_movimentos para ETAPA 2/3 (validar se promoção foi aplicada)
+                    audit_movimentos_file = self.audit_movimentos_dir.get().strip()
+                    movimentos_jsons = {}
+                    if audit_movimentos_file and Path(audit_movimentos_file).exists():
+                        try:
+                            # O export_movimentos tem estrutura similar - carrega JSONs por cupom/teste
+                            movimentos_jsons = self._load_partner_jsons(audit_movimentos_file)
+                            self._log(f"   Carregados {len(movimentos_jsons)} movimentos do export_movimentos.")
+                            if movimentos_jsons:
+                                self._log(f"   Cupons no export_movimentos: {sorted(movimentos_jsons.keys())}")
+                        except Exception as e:
+                            self._log(f"   ERRO ao carregar export_movimentos: {e}")
+                    else:
+                        self._log("   Arquivo export_movimentos não informado; pulando validação de promoções aplicadas.")
+                    
+                    # Merge: partner_jsons (requests) + movimentos_jsons (promoções aplicadas)
+                    # Prioriza movimentos_jsons para ETAPA 2/3 pois tem a promoção aplicada
+                    all_partner_jsons = {**partner_jsons, **movimentos_jsons}
+                    
+                    # Get product catalog from first test (all tests have it from reader)
+                    product_catalog = raw_tests[0].get('product_catalog', {}) if raw_tests else {}
                     
                     for t in validated_tests:
                         try:
@@ -1482,7 +1517,8 @@ class ValidaAIApp:
                                 return ''
                             
                             test_cupom = _get_test_cupom(t)
-                            partner_json = partner_jsons.get(test_cupom)
+                            # Use merged JSONs (audit + movimentos) - movimentos has priority for ETAPA 2/3
+                            partner_json = all_partner_jsons.get(test_cupom)
                             
                             if partner_json:
                                 self._log(f"   Teste {t.get('teste')}: Usando JSON DO PARCEIRO (cupom: {test_cupom})")

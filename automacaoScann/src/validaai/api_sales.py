@@ -169,9 +169,12 @@ class APISalesBuilder:
             return apenas_digitos[:6]
         return None
 
-    def _parse_itens(self, itens_raw: str) -> List[Dict[str, Any]]:
+    def _parse_itens(self, itens_raw: str, product_catalog: Dict[str, Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         if not itens_raw or not isinstance(itens_raw, str):
             return []
+
+        if product_catalog is None:
+            product_catalog = {}
 
         partes = [p.strip() for p in itens_raw.split('+') if p.strip()]
         detalhes = []
@@ -189,17 +192,21 @@ class APISalesBuilder:
 
             codigo_limpo = codigo.strip()
             codigo_interno = self.CODIGO_INTERNO_POR_EAN.get(codigo_limpo, codigo_limpo)
+            
+            # Look up price and description from catalog
+            preco_unitario = product_catalog.get(codigo_limpo, {}).get('preco', 0.0)
+            descricao = product_catalog.get(codigo_limpo, {}).get('descricao', '')
 
             detalhes.append({
                 'codigoBarras': codigo_limpo,
                 'codigoArticulo': codigo_interno,
-                'descripcionArticulo': '',
+                'descripcionArticulo': descricao,
                 'cantidad': quantidade,
-                'importeUnitario': None,
-                'impuesto': None,
-                'importe': None,
-                'descuento': None,
-                'recargo': None,
+                'importeUnitario': preco_unitario,
+                'impuesto': 0.0,
+                'importe': round(preco_unitario * quantidade, 2),
+                'descuento': 0.0,
+                'recargo': 0.0,
                 'datosExtra': {},
                 '_tipo': self._classificar_item(codigo_limpo),
             })
@@ -230,6 +237,11 @@ class APISalesBuilder:
         data_venda: Optional[str] = None,
         tipo_promo: str = '',
         pagamentos: Optional[List[Dict[str, Any]]] = None,
+        delivery_postal_code: str = '',
+        referencia: str = '',
+        id_cliente: str = '',
+        documento_cliente: str = '',
+        product_catalog: Optional[Dict[str, Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
 
         sub_dec = self._to_decimal(subtotal)
@@ -243,32 +255,56 @@ class APISalesBuilder:
             data_venda = datetime.now().isoformat()
 
         canal = self._canal_venda(observacoes, pagamento)
-        itens_parseados = self._parse_itens(itens_da_venda)
+        
+        # Use product_catalog from parameter (passed by caller)
+        if product_catalog is None:
+            product_catalog = {}
+        itens_parseados = self._parse_itens(itens_da_venda, product_catalog)
 
-        # Conserva valores do roteiro para itens; PESAVEL sem preço tabela não é inventado aqui.
+        # ============================================================
+        # VALORES JÁ CALCULADOS PELO _parse_itens (usando preço real do catálogo)
+        # ============================================================
+        # _parse_itens já preenche importeUnitario, importe, imposto, descuento, recargo
+        # Só precisamos garantir que os valores existam
         for item in itens_parseados:
-            val = item.get('importe')
-            if val is None:
-                val = Decimal('0')
-            item['importe'] = val
-            item['importeUnitario'] = item.get('importeUnitario') or Decimal('0')
-            item['impuesto'] = item.get('impuesto') or Decimal('0')
-            item['descuento'] = item.get('descuento') or Decimal('0')
-            item['recargo'] = item.get('recargo') or Decimal('0')
+            if item.get('importeUnitario') is None:
+                item['importeUnitario'] = 0.0
+            if item.get('importe') is None:
+                item['importe'] = 0.0
+            if item.get('impuesto') is None:
+                item['impuesto'] = 0.0
+            if item.get('descuento') is None:
+                item['descuento'] = 0.0
+            if item.get('recargo') is None:
+                item['recargo'] = 0.0
 
-        # Parse pagamentos using provided list or fallback to single payment
+        # Calcular total_valor baseado na soma dos itens (mais preciso)
+        total_valor = sum(float(item.get('importe') or 0) for item in itens_parseados)
+        # Se o total do roteiro for diferente, usar o do roteiro (pode ter desconto/acréscimo global)
+        if tot_dec and float(tot_dec) > 0:
+            total_valor = float(tot_dec)
+
+        # ============================================================
+        # PAGAMENTOS - conforme modelo API 3.0
+        # ============================================================
         pagos = []
         if pagamentos:
             for p in pagamentos:
                 codigo = p.get('codigo')
                 raw = p.get('raw') or p.get('norm')
                 if codigo is not None:
+                    # Dividir total entre pagamentos se múltiplo
+                    importe_pago = round(total_valor / len(pagamentos), 2) if len(pagamentos) > 0 else total_valor
+                    
                     pago = {
                         'codigoTipoPago': int(codigo),
-                        'codigoMoneda': int(self.CODIGO_MOEDA),
-                        'importe': round(float(tot_dec), 2),  # Will be adjusted proportionally if needed
+                        'codigoProveedorQR': 1 if codigo == 14 else 0,
+                        'codigoBanco': 0,  # Será preenchido se houver info no roteiro
+                        'descripcionBanco': '',
+                        'codigoMoneda': self.CODIGO_MOEDA,  # STRING conforme API
+                        'importe': importe_pago,
                         'cotizacion': 1.00,
-                        'documentoCliente': '',
+                        'documentoCliente': documento_cliente,
                         'bin': self._extrair_bin(numero_cupom) if codigo in (10, 13) and self._tem_promo(tipo_promo) else '',
                         'codigoTarjeta': '',
                         'numeroAutorizacao': '',
@@ -276,10 +312,6 @@ class APISalesBuilder:
                         'detalleFinalizadora': self._detalle_finalizadora(raw),
                         'cuotas': 0,
                     }
-                    if codigo == 14:
-                        pago['codigoProveedorQR'] = 1
-                        pago['codigoBanco'] = ''
-                        pago['descripcionBanco'] = ''
                     pagos.append(pago)
         else:
             # Fallback: single payment from 'pagamento' string
@@ -287,10 +319,13 @@ class APISalesBuilder:
             if codigo_pago is not None:
                 pago = {
                     'codigoTipoPago': int(codigo_pago),
-                    'codigoMoneda': int(self.CODIGO_MOEDA),
-                    'importe': round(float(tot_dec), 2),
+                    'codigoProveedorQR': 1 if codigo_pago == 14 else 0,
+                    'codigoBanco': 0,
+                    'descripcionBanco': '',
+                    'codigoMoneda': self.CODIGO_MOEDA,  # STRING
+                    'importe': total_valor,
                     'cotizacion': 1.00,
-                    'documentoCliente': '',
+                    'documentoCliente': documento_cliente,
                     'bin': self._extrair_bin(numero_cupom) if codigo_pago in (10, 13) and self._tem_promo(tipo_promo) else '',
                     'codigoTarjeta': '',
                     'numeroAutorizacao': '',
@@ -298,19 +333,11 @@ class APISalesBuilder:
                     'detalleFinalizadora': self._detalle_finalizadora(pagamento),
                     'cuotas': 0,
                 }
-                if codigo_pago == 14:
-                    pago['codigoProveedorQR'] = 1
-                    pago['codigoBanco'] = ''
-                    pago['descripcionBanco'] = ''
                 pagos.append(pago)
 
-        # Adjust importe per payment if multiple (split total proportionally)
-        if len(pagos) > 1:
-            # For now, just split equally - real implementation would need amounts from template
-            split_val = round(float(tot_dec) / len(pagos), 2)
-            for p in pagos:
-                p['importe'] = split_val
-
+        # ============================================================
+        # DETALLES (itens) - todos campos obrigatórios preenchidos
+        # ============================================================
         detalles = []
         for item in itens_parseados:
             extra = item.get('datosExtra')
@@ -318,16 +345,21 @@ class APISalesBuilder:
                 extra = json.dumps(extra, ensure_ascii=False) if extra else ''
             elif extra is None:
                 extra = ''
+            
+            # codigoArticulo: usar código interno se mapeado, senão EAN
+            codigo_articulo = item.get('codigoArticulo') or item.get('codigoBarras') or ''
+            codigo_barras = item.get('codigoBarras') or ''
+            
             det = {
-                'codigoArticulo': item['codigoArticulo'] or '',
-                'codigoBarras': item['codigoBarras'] or '',
-                'descripcionArticulo': item['descripcionArticulo'] or '',
-                'cantidad': round(float(item['cantidad'] or 0), 2),
-                'importeUnitario': round(float(item['importeUnitario'] or 0), 2),
-                'importe': round(float(item['importe'] or 0), 2),
-                'impuesto': round(float(item['impuesto'] or 0), 2),
-                'descuento': round(float(item['descuento'] or 0), 2),
-                'recargo': round(float(item['recargo'] or 0), 2),
+                'codigoArticulo': codigo_articulo,
+                'codigoBarras': codigo_barras,
+                'descripcionArticulo': item.get('descripcionArticulo') or '',
+                'cantidad': round(float(item.get('cantidad') or 0), 2),
+                'importeUnitario': round(float(item.get('importeUnitario') or 0), 2),
+                'importe': round(float(item.get('importe') or 0), 2),
+                'impuesto': 0.0,  # Em desenvolvimento no Scanntech
+                'descuento': round(float(item.get('descuento') or 0), 2),
+                'recargo': round(float(item.get('recargo') or 0), 2),
                 'datosExtra': extra,
             }
             detalles.append(det)
@@ -336,21 +368,26 @@ class APISalesBuilder:
         if is_cancelamento and numero and not numero.startswith('-'):
             numero = f'-{numero}'
 
+        # ============================================================
+        # MOVIMIENTO - estrutura completa API 3.0
+        # ============================================================
         movimiento = {
             'fecha': data_venda,
             'numero': numero,
-            'descuentoTotal': round(self._to_decimal(desc_dec) or 0, 2),
+            'descuentoTotal': round(float(desc_dec) if desc_dec else 0.0, 2),
             'recargoTotal': 0.0,
-            'codigoMoneda': int(self.CODIGO_MOEDA),
+            'codigoMoneda': self.CODIGO_MOEDA,  # STRING "986"
             'cotizacion': 1.00,
-            'total': round(self._to_decimal(tot_dec) or 0, 2),
+            'total': round(total_valor, 2),
             'cancelacion': bool(is_cancelamento),
-            'documentoCliente': '',
+            'documentoCliente': documento_cliente,
             'codigoCanalVenta': canal['codigoCanalVenta'],
             'descripcionCanalVenta': canal['descripcionCanalVenta'],
-            'idCliente': '',
+            'idCliente': id_cliente,
+            'referencia': referencia,
             'detalles': detalles,
             'pagos': pagos,
+            'deliveryPostalCode': delivery_postal_code,
         }
 
         payload = {'movimiento': movimiento}
@@ -360,21 +397,27 @@ class APISalesBuilder:
         if not isinstance(payload, dict):
             return {'status': 'ERRO_JSON', 'motivo': 'JSON inválido', 'alertas': []}
 
+        # Aceita tanto formato wrapped (movimiento) quanto flat
+        if 'movimiento' in payload:
+            movimiento = payload['movimiento']
+        else:
+            movimiento = payload
+
         obrigatorios = [
             'fecha', 'numero', 'descuentoTotal', 'recargoTotal',
             'codigoMoneda', 'cotizacion', 'total', 'cancelacion',
             'detalles', 'pagos'
         ]
-        erros = [f'Campo obrigatorio ausente: {c}' for c in obrigatorios if c not in payload]
+        erros = [f'Campo obrigatorio ausente: {c}' for c in obrigatorios if c not in movimiento]
         alertas = []
 
-        if payload.get('codigoMoneda') != self.CODIGO_MOEDA:
+        if movimiento.get('codigoMoneda') != self.CODIGO_MOEDA:
             erros.append(f"codigoMoneda deve ser {self.CODIGO_MOEDA}")
-        if payload.get('cotizacion') != self.COTIZACION:
+        if movimiento.get('cotizacion') != self.COTIZACION:
             erros.append(f"cotizacion deve ser {self.COTIZACION}")
 
         for campo in ('descuentoTotal', 'recargoTotal', 'total'):
-            val = payload.get(campo)
+            val = movimiento.get(campo)
             if val is not None:
                 s = str(val)
                 if '.' in s:
@@ -382,10 +425,10 @@ class APISalesBuilder:
                     if dec > 2:
                         alertas.append(f'{campo} com mais de 2 casas decimais: {s}')
 
-        if payload.get('cancelacion') is True and not str(payload.get('numero', '')).startswith('-'):
+        if movimiento.get('cancelacion') is True and not str(movimiento.get('numero', '')).startswith('-'):
             erros.append('Cancelamento deve ter numero com hifen')
 
-        detalles = payload.get('detalles', [])
+        detalles = movimiento.get('detalles', [])
         if not isinstance(detalles, list):
             erros.append('detalles nao e uma lista')
         else:

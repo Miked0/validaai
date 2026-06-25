@@ -191,7 +191,7 @@ class ValidationScheduler:
                 f"REVISAO: {summary['revisao']}\n"
                 f"ERRO: {summary['erro']}\n"
                 f"NOT_RUN: {summary.get('not_run', 0)}\n"
-                f"Output: {len(output_dir.glob('*'))} files generated"
+                f"Output: {len(list(output_dir.glob('*')))} files generated"
             )
             
             # Send notifications

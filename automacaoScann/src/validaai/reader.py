@@ -32,6 +32,8 @@ class TestScriptReader:
         self.data = None
         self.tests = []
         self.etapa_filter: Optional[str] = None
+        # Product catalog from "Produtos a cadastrar" sheet
+        self.product_catalog: Dict[str, Dict[str, Any]] = {}
 
     def set_etapa(self, etapa: Optional[str]) -> None:
         """
@@ -44,20 +46,101 @@ class TestScriptReader:
 
     def read_tests(self) -> List[Dict[str, Any]]:
         """
+        Public method to read tests from the spreadsheet.
+        """
+        return self._read_excel_openpyxl()
+
+    def _load_product_catalog(self) -> None:
+        """
+        Load product catalog from 'Produtos a cadastrar' sheet.
+        Expected columns: EAN, Valor (preço), Descrição (opcional).
+        Populates self.product_catalog with EAN as key.
+        """
+        import openpyxl
+        workbook = openpyxl.load_workbook(self.file_path)
+        
+        for sheet_name in workbook.sheetnames:
+            # Look for "Produtos a cadastrar" sheet (case insensitive)
+            if 'PRODUTO' not in sheet_name.upper() and 'CADASTRAR' not in sheet_name.upper():
+                continue
+            
+            ws = workbook[sheet_name]
+            header = None
+            header_row = None
+            for r_idx, row in enumerate(ws.iter_rows(values_only=True), start=1):
+                vals = [str(c).strip() if c is not None else '' for c in row]
+                up = [v.upper() for v in vals]
+                # Detect header: look for EAN + Valor/Preço
+                if 'EAN' in up and any(k in up for k in ['VALOR', 'PRECO', 'PREÇO', 'PRICE']):
+                    header = vals
+                    header_row = r_idx
+                    break
+            if not header:
+                continue
+            
+            # Map column indices
+            ean_idx = None
+            valor_idx = None
+            desc_idx = None
+            for i, h in enumerate(header):
+                h_up = h.upper()
+                if h_up == 'EAN' or h_up == 'CODIGO' or h_up == 'CÓDIGO':
+                    ean_idx = i
+                elif any(k in h_up for k in ['VALOR', 'PRECO', 'PREÇO', 'PRICE', 'PREÇO UNIT', 'PRECO UNIT']):
+                    valor_idx = i
+                elif any(k in h_up for k in ['DESCRICAO', 'DESCRIÇÃO', 'DESC', 'PRODUTO', 'NOME']):
+                    desc_idx = i
+            
+            if ean_idx is None or valor_idx is None:
+                continue
+            
+            rows = list(ws.iter_rows(min_row=header_row + 1, values_only=True))
+            for row in rows:
+                if len(row) <= max(ean_idx, valor_idx):
+                    continue
+                ean = str(row[ean_idx]).strip() if row[ean_idx] else ''
+                valor_raw = row[valor_idx]
+                desc = str(row[desc_idx]).strip() if desc_idx is not None and len(row) > desc_idx and row[desc_idx] else ''
+                
+                if not ean:
+                    continue
+                
+                # Parse valor
+                try:
+                    if isinstance(valor_raw, (int, float)):
+                        valor = float(valor_raw)
+                    else:
+                        valor_str = str(valor_raw).strip().replace(',', '.')
+                        valor = float(valor_str) if valor_str else 0.0
+                except (ValueError, TypeError):
+                    valor = 0.0
+                
+                self.product_catalog[ean] = {
+                    'preco': valor,
+                    'descricao': desc
+                }
+        
+        try:
+            workbook.close()
+        except Exception:
+            pass
+
+    def _read_excel(self) -> List[Dict[str, Any]]:
+        """
         Read the test script and extract test cases.
 
         Returns:
             List of dictionaries representing raw test cases
         """
+        # First, load product catalog from "Produtos a cadastrar" sheet
+        self._load_product_catalog()
+        
         # Read the file based on extension and available libraries
         file_ext = Path(self.file_path).suffix.lower()
         
         if file_ext == '.xlsx':
-            if PANDAS_AVAILABLE:
-                return self._read_excel()
-            else:
-                # Fallback to openpyxl for Excel files
-                return self._read_excel_openpyxl()
+            # Use openpyxl directly (works without pandas/tkinter)
+            return self._read_excel_openpyxl()
         elif file_ext == '.csv':
             return self._read_csv()
         else:
@@ -127,11 +210,26 @@ class TestScriptReader:
                 if t_key in seen_tests:
                     continue
                 seen_tests.add(t_key)
-
+                # Find column keys (case-insensitive)
                 subtotal_key = next((k for k in rd if k and k.lower() in ['sub-total', 'subtotal']), 'Sub-Total')
                 total_key = next((k for k in rd if k and k.lower() in ['total']), 'Total')
                 desconto_key = next((k for k in rd if k and k.lower() in ['desconto']), 'Desconto')
-
+                
+                # Also look for alternative column names for ETAPA 2
+                itens_key = next((k for k in rd if k and k.lower() in ['itens da venda', 'articulos movimiento', 'itens']), 'Itens da venda')
+                pagamento_key = next((k for k in rd if k and k.lower() in ['pagamento']), 'Pagamento')
+                observacoes_key = next((k for k in rd if k and k.lower() in ['observacoes']), 'Observacoes')
+                observacao_parceiro_key = next((k for k in rd if k and k.lower() in ['observacoes.1']), 'Observacoes.1')
+                tipo_promo_key = next((k for k in rd if k and k.lower() in ['tipo promo', 'tipo promocao', 'tipo promo', 'promotion_type', 'tipo']), 'Tipo Promo')
+                
+                # Cupom fields - priority: NFCE (under "Numero de cupom") > SAT > ECF > explicit Cupom columns
+                nfce_key = next((k for k in rd if k and k.lower() in ['nfce', 'nfc-e']), 'NFCE')
+                sat_key = next((k for k in rd if k and k.lower() in ['sat']), 'SAT')
+                ecf_key = next((k for k in rd if k and k.lower() in ['ecf']), 'ECF')
+                cupom_key = next((k for k in rd if k and k.lower() in ['cupom', 'numero cupom', 'numero do cupom']), 'Cupom')
+                json_key = next((k for k in rd if k and k.lower() in ['json']), 'Json')
+                minoristas_key = next((k for k in rd if k and k.lower() in ['minoristas']), 'Minoristas')
+                
                 def _first_nonempty(vals_list, header_list, key):
                     matches = []
                     for i, h in enumerate(header_list):
@@ -141,24 +239,33 @@ class TestScriptReader:
                                 matches.append(str(v).strip())
                     return matches[-1] if matches else ''
 
+                # Cupom: priority NFCE (under "Numero de cupom") > SAT > ECF > explicit Cupom
+                cupom_val = (_first_nonempty(vals, header, nfce_key) or 
+                            _first_nonempty(vals, header, sat_key) or 
+                            _first_nonempty(vals, header, ecf_key) or 
+                            _first_nonempty(vals, header, cupom_key))
+                
                 std = {
                     'teste': float(t_key) if '.' in t_key else int(t_key),
                     'linha_original': f"{sheet_name}!{offset}",
                     'bloco_atual': sheet_name.strip().upper(),
-                    'tipo_promo': rd.get('Tipo Promo', rd.get('TIPO PROMO', '')),
-                    'itens_da_venda': rd.get('Itens da venda', rd.get('ARTICULOS MOVIMIENTO', rd.get('Itens', ''))),
-                    'pagamento': rd.get('Pagamento', ''),
-                    'observacoes': _first_nonempty(vals, header, 'Observacoes'),
-                    'observacao_parceiro': _first_nonempty(vals, header, 'Observacoes.1'),
+                    'tipo_promo': rd.get(tipo_promo_key, ''),
+                    'itens_da_venda': rd.get(itens_key, ''),
+                    'pagamento': rd.get(pagamento_key, ''),
+                    'observacoes': _first_nonempty(vals, header, observacoes_key),
+                    'observacao_parceiro': _first_nonempty(vals, header, observacao_parceiro_key),
                     'subtotal_esperado': rd.get(subtotal_key, ''),
                     'desconto_esperado': rd.get(desconto_key, '0') or '0',
                     'total_esperado': rd.get(total_key, ''),
-                    'sat': _first_nonempty(vals, header, 'SAT'),
-                    'ecf': _first_nonempty(vals, header, 'ECF'),
-                    'nfce': _first_nonempty(vals, header, 'NFCE'),
-                    'json': rd.get('Json', ''),
-                    'minoristas': rd.get('Minoristas', ''),
-                    'cupom': _first_nonempty(vals, header, 'Cupom'),
+                    'sat': _first_nonempty(vals, header, sat_key),
+                    'ecf': _first_nonempty(vals, header, ecf_key),
+                    'nfce': _first_nonempty(vals, header, nfce_key),
+                    'json': rd.get(json_key, ''),
+                    'minoristas': rd.get(minoristas_key, ''),
+                    # Cupom: priority NFCE > SAT > ECF > explicit Cupom
+                    'cupom': cupom_val,
+                    # Include product catalog for downstream use
+                    'product_catalog': self.product_catalog,
                 }
                 all_tests.append(std)
 
@@ -174,7 +281,8 @@ class TestScriptReader:
         Supports multiple ETAPA sheets and Observacoes.1 column.
         """
         import openpyxl
-        workbook = openpyxl.load_workbook(self.file_path)
+        # Use data_only=True to get calculated formula values
+        workbook = openpyxl.load_workbook(self.file_path, data_only=True)
         all_tests: List[Dict[str, Any]] = []
 
         for sheet_name in workbook.sheetnames:
@@ -221,6 +329,13 @@ class TestScriptReader:
                 except ValueError:
                     t_num = None
                 
+                # Skip rows where Teste is not a valid number (headers, instructions, etc.)
+                if t_num is None and not is_formula:
+                    continue
+                # Also skip if formula doesn't follow =A... pattern (not sequential test numbering)
+                if is_formula and not ('A' in t_str or 'a' in t_str):
+                    continue
+                
                 # Use explicit number if available, otherwise assign sequential
                 if t_num is not None:
                     t_key = str(int(t_num) if t_num == int(t_num) else t_num)
@@ -234,11 +349,26 @@ class TestScriptReader:
                 seen_tests.add(t_key)
 
                 # Find column keys (case-insensitive)
+                # Find column keys (case-insensitive)
                 subtotal_key = next((k for k in rd if k and k.lower() in ['sub-total', 'subtotal']), 'Sub-Total')
                 total_key = next((k for k in rd if k and k.lower() in ['total']), 'Total')
                 desconto_key = next((k for k in rd if k and k.lower() in ['desconto']), 'Desconto')
-
-                # Helper to get first non-empty from multiple possible column names
+                
+                # Also look for alternative column names for ETAPA 2
+                itens_key = next((k for k in rd if k and k.lower() in ['itens da venda', 'articulos movimiento', 'itens']), 'Itens da venda')
+                pagamento_key = next((k for k in rd if k and k.lower() in ['pagamento']), 'Pagamento')
+                observacoes_key = next((k for k in rd if k and k.lower() in ['observacoes']), 'Observacoes')
+                observacao_parceiro_key = next((k for k in rd if k and k.lower() in ['observacoes.1']), 'Observacoes.1')
+                tipo_promo_key = next((k for k in rd if k and k.lower() in ['tipo promo', 'tipo promocao', 'tipo promo', 'promotion_type', 'tipo']), 'Tipo Promo')
+                
+                # Cupom fields - priority: NFCE (under "Numero de cupom") > SAT > ECF > explicit Cupom columns
+                nfce_key = next((k for k in rd if k and k.lower() in ['nfce', 'nfc-e']), 'NFCE')
+                sat_key = next((k for k in rd if k and k.lower() in ['sat']), 'SAT')
+                ecf_key = next((k for k in rd if k and k.lower() in ['ecf']), 'ECF')
+                cupom_key = next((k for k in rd if k and k.lower() in ['cupom', 'numero cupom', 'numero do cupom']), 'Cupom')
+                json_key = next((k for k in rd if k and k.lower() in ['json']), 'Json')
+                minoristas_key = next((k for k in rd if k and k.lower() in ['minoristas']), 'Minoristas')
+                
                 def _first_nonempty(vals_list, header_list, key):
                     matches = []
                     for i, h in enumerate(header_list):
@@ -248,24 +378,33 @@ class TestScriptReader:
                                 matches.append(str(v).strip())
                     return matches[-1] if matches else ''
 
+                # Cupom: priority NFCE (under "Numero de cupom") > SAT > ECF > explicit Cupom
+                cupom_val = (_first_nonempty(vals, header, nfce_key) or 
+                            _first_nonempty(vals, header, sat_key) or 
+                            _first_nonempty(vals, header, ecf_key) or 
+                            _first_nonempty(vals, header, cupom_key))
+                
                 std = {
                     'teste': float(t_key) if '.' in t_key else int(t_key),
                     'linha_original': f"{sheet_name}!{offset}",
                     'bloco_atual': sheet_name.strip().upper(),
-                    'tipo_promo': rd.get('Tipo Promo', rd.get('TIPO PROMO', '')),
-                    'itens_da_venda': rd.get('Itens da venda', rd.get('ARTICULOS MOVIMIENTO', rd.get('Itens', ''))),
-                    'pagamento': rd.get('Pagamento', ''),
-                    'observacoes': _first_nonempty(vals, header, 'Observacoes'),
-                    'observacao_parceiro': _first_nonempty(vals, header, 'Observacoes.1'),
+                    'tipo_promo': rd.get(tipo_promo_key, ''),
+                    'itens_da_venda': rd.get(itens_key, ''),
+                    'pagamento': rd.get(pagamento_key, ''),
+                    'observacoes': _first_nonempty(vals, header, observacoes_key),
+                    'observacao_parceiro': _first_nonempty(vals, header, observacao_parceiro_key),
                     'subtotal_esperado': rd.get(subtotal_key, ''),
                     'desconto_esperado': rd.get(desconto_key, '0') or '0',
                     'total_esperado': rd.get(total_key, ''),
-                    'sat': _first_nonempty(vals, header, 'SAT'),
-                    'ecf': _first_nonempty(vals, header, 'ECF'),
-                    'nfce': _first_nonempty(vals, header, 'NFCE'),
-                    'json': rd.get('Json', ''),
-                    'minoristas': rd.get('Minoristas', ''),
-                    'cupom': _first_nonempty(vals, header, 'Cupom'),
+                    'sat': _first_nonempty(vals, header, sat_key),
+                    'ecf': _first_nonempty(vals, header, ecf_key),
+                    'nfce': _first_nonempty(vals, header, nfce_key),
+                    'json': rd.get(json_key, ''),
+                    'minoristas': rd.get(minoristas_key, ''),
+                    # Cupom: priority NFCE > SAT > ECF > explicit Cupom
+                    'cupom': cupom_val,
+                    # Include product catalog for downstream use
+                    'product_catalog': self.product_catalog,
                 }
                 all_tests.append(std)
 
@@ -455,10 +594,10 @@ class TestScriptReader:
     def _is_instructional_row(self, row: Dict[str, Any]) -> bool:
         """
         Check if a row is instructional/header rather than a test case.
-
+        
         Args:
             row: A row from the data
-
+            
         Returns:
             True if the row is instructional, False otherwise
         """
@@ -475,10 +614,10 @@ class TestScriptReader:
                 return True
             # Check if it's clearly instructional text
             upper_teste = teste_value.upper()
-            if any(keyword in upper_teste for keyword in ['INSTRUÇÃO', 'SIGA', 'BLOCO']):
+            if any(keyword in upper_teste for keyword in ['INSTRUÇÃO', 'SIGA', 'BLOCO', 'STATUS', 'NFCE', 'TIPO PROMO', 'NUMERO DE CUPOM', 'ARTICULOS MOVIMIENTO', 'OBSERVACOES', 'PREENCHIMENTO', 'SCANNTECH']):
                 return True
-            # Check if it's not a simple number
-            if not teste_value.replace('.', '').isdigit():
+            # Check if it's not a simple number (allow formulas like "1", "2", "3")
+            if not (teste_value.replace('.', '').isdigit() or (teste_value.startswith('=') and 'A' in teste_value)):
                 return True
         
         # Check if it's clearly a block header

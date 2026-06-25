@@ -18,7 +18,8 @@ class ItemParser:
         Args:
             test_dict: Dictionary containing test data with 'itens_da_venda' field (from reader)
                    or 'itens_raw' field (for backward compatibility)
-           
+                   Can also contain 'product_catalog' from reader for price lookup
+          
         Returns:
             Updated test dictionary with parsed items and expected quantities for pesáveis
         """
@@ -28,19 +29,22 @@ class ItemParser:
         # Get the raw items string - try reader's field name first, then fallback
         itens_raw = test_dict.get('itens_da_venda', test_dict.get('itens_raw', ''))
 
+        # Get product catalog for price lookup
+        product_catalog = test_dict.get('product_catalog', {})
+
         if not itens_raw or not isinstance(itens_raw, str):
             result['itens_parseados'] = []
             result['pesaveis_esperados'] = {}
             return result
 
         # Parse the items
-        parsed_items, pesaveis_esperados = self._parse_item_string(itens_raw)
+        parsed_items, pesaveis_esperados = self._parse_item_string(itens_raw, product_catalog)
         result['itens_parseados'] = parsed_items
         result['pesaveis_esperados'] = pesaveis_esperados
 
         return result
     
-    def _parse_item_string(self, item_string: str) -> tuple:
+    def _parse_item_string(self, item_string: str, product_catalog: Dict[str, Dict[str, Any]] = None) -> tuple:
         """
         Parse an item string into a list of item dictionaries.
         
@@ -54,11 +58,15 @@ class ItemParser:
         
         Args:
             item_string: Raw item string from the test script
-           
+            product_catalog: Optional dict mapping EAN -> {preco, descricao}
+          
         Returns:
-            Tuple of (List of dictionaries with keys: codigo, quantidade, tipo, quantidade_esperada), 
+            Tuple of (List of dictionaries with keys: codigo, quantidade, tipo, quantidade_esperada, preco_unitario, descricao), 
             Dict mapping pesavel_codigo -> quantidade_esperada
         """
+        if product_catalog is None:
+            product_catalog = {}
+            
         if not item_string or not isinstance(item_string, str):
             return [], {}
         
@@ -87,6 +95,10 @@ class ItemParser:
                 codigo = match.group(2).strip()
                 item_type = self._determine_item_type(codigo)
                 
+                # Look up price and description from catalog
+                preco_unitario = product_catalog.get(codigo, {}).get('preco', 0.0)
+                descricao = product_catalog.get(codigo, {}).get('descricao', '')
+                
                 # If pesável, store expected quantity
                 if item_type == 'pesavel':
                     # Use a generic key for pesável since multiple pesáveis could exist
@@ -96,6 +108,8 @@ class ItemParser:
                         'quantidade': quantity,
                         'quantidade_esperada': quantity,
                         'tipo': item_type,
+                        'preco_unitario': preco_unitario,
+                        'descricao': descricao,
                         'cancelar_item': bool(cancelar_item)
                     })
                 else:
@@ -103,6 +117,8 @@ class ItemParser:
                         'codigo': codigo,
                         'quantidade': quantity,
                         'tipo': item_type,
+                        'preco_unitario': preco_unitario,
+                        'descricao': descricao,
                         'cancelar_item': bool(cancelar_item)
                     })
             else:
@@ -110,10 +126,16 @@ class ItemParser:
                 codigo = part_clean.strip()
                 if codigo and codigo.upper() not in ['PESABLE', 'PESAVEL', 'WEIGHT', 'PESO']:  # Skip standalone PESABLE without qty
                     if codigo:  # Only add if not empty
+                        item_type = self._determine_item_type(codigo)
+                        preco_unitario = product_catalog.get(codigo, {}).get('preco', 0.0)
+                        descricao = product_catalog.get(codigo, {}).get('descricao', '')
+                        
                         parsed_items.append({
                             'codigo': codigo,
                             'quantidade': 1.0,
-                            'tipo': self._determine_item_type(codigo),
+                            'tipo': item_type,
+                            'preco_unitario': preco_unitario,
+                            'descricao': descricao,
                             'cancelar_item': bool(cancelar_item)
                         })
         

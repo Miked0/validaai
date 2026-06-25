@@ -446,7 +446,7 @@ class TestEtapa1SDDScanntech:
         assert cenario.grupo == "Acrescimo"
         assert "acrescimo" in cenario.regras_especiais
         assert cenario.desconto_esperado < 0  # negative indicates acréscimo (addition)
-                assert cenario.total_esperado == cenario.subtotal_esperado - cenario.desconto_esperado
+        assert cenario.total_esperado == cenario.subtotal_esperado - cenario.desconto_esperado
 
     # ---------------------------------------------------------------
     # Testes do Grupo 4 — Desconto
