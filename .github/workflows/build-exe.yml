@@ -1,0 +1,62 @@
+name: Build Windows Executable
+
+on:
+  push:
+    tags: ['v*']  # Trigger on version tags (v1.0.0, v2.0.0, etc.)
+  workflow_dispatch:  # Allow manual trigger
+
+permissions:
+  contents: write  # Needed to create releases
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: automacaoScann
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pyinstaller pandas openpyxl
+          pip install -e .  # instala validaai-core
+          
+      - name: Build Executable
+        run: |
+          pyinstaller --onefile --windowed \
+            --name "ValidaAI" \
+            --add-data "config/export.json;config" \
+            --add-data "design/tokens.json;design" \
+            gui_app_standalone.py
+            
+      - name: Verify Executable
+        run: |
+          ls -la dist/
+          ./dist/ValidaAI.exe --help 2>&1 | head -5 || true
+          
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ValidaAI-Windows
+          path: automacaoScann/dist/ValidaAI.exe
+          retention-days: 90
+          
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: automacaoScann/dist/ValidaAI.exe
+          generate_release_notes: true
+          draft: false
+          prerelease: false
